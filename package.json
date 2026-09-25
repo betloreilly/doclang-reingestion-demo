@@ -1,0 +1,9 @@
+{
+  "name": "doclang-reingestion-demo",
+  "private": true,
+  "scripts": {
+    "backend": "cd backend && .venv/bin/uvicorn app.main:app --reload --port 8000",
+    "frontend": "cd frontend && npm run dev",
+    "test": "cd backend && .venv/bin/pytest -q"
+  }
+}

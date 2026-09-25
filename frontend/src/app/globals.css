@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f4f8fb;
+  --foreground: #0f172a;
+  --accent: #0f766e;
+  --accent-2: #0369a1;
+}
+
+body {
+  color: var(--foreground);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(15, 118, 110, 0.12), transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, rgba(3, 105, 161, 0.10), transparent 50%),
+    linear-gradient(180deg, #f8fbfd 0%, #eef4f8 100%);
+  font-family: var(--font-sans), "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  min-height: 100vh;
+}
+
+.font-display {
+  font-family: var(--font-display), Fraunces, ui-serif, Georgia, serif;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9em;
+}

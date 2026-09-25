@@ -1,0 +1,16 @@
+# Pinned for DocLang Reingestion Savings (Python 3.12)
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+python-dotenv==1.2.3
+pydantic==2.13.5
+pydantic-settings==2.15.0
+minio==7.2.20
+docling-core==2.98.0
+pypdf==6.19.0
+sentence-transformers==6.1.0
+transformers==5.17.0
+torch==2.14.0
+tiktoken==0.14.0
+httpx==0.28.1
+numpy==2.5.3
+pytest==9.1.1
