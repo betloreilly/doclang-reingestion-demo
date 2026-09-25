@@ -297,18 +297,6 @@ Notes:
 
 ---
 
-## Troubleshooting
-
-| Problem | Reason and fix |
-|---------|----------------|
-| "Internal Server Error" in the UI | The backend is not running. Start uvicorn on port 8000. |
-| Job disappears with "Job not found" | `--reload` restarted the backend (a Python file changed). Jobs live in memory; start the run again. |
-| "Staged mode requires cached DocLang" | Download the documents first, or use the local source. |
-| "Another benchmark job is already running" | Only one measured run at a time. Wait for it to finish. |
-| Embedding card says unavailable | No run yet, zero tokens, or no embedding price entered. The card says which one. |
-
----
-
 ## Tests
 
 ```bash
