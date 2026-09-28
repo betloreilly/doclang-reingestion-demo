@@ -1,0 +1,5 @@
+# Isolated venv for the recall comparison's Unstructured baseline (Python 3.12).
+# Kept separate from requirements.txt so its dependencies never touch the app venv.
+#   python3.12 -m venv .venv-unstructured
+#   .venv-unstructured/bin/pip install -r requirements-unstructured.txt
+unstructured[pdf]==0.27.8

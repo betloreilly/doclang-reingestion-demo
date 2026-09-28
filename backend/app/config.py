@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -60,7 +60,34 @@ class Settings(BaseSettings):
         default="Qwen/Qwen3-Embedding-0.6B", alias="EMBEDDING_MODEL"
     )
 
-    @field_validator("minio_secure", mode="before")
+    # FinanceBench recall comparison (DocLang vs Unstructured). Key stays server-side.
+    openai_api_key: SecretStr = Field(default=SecretStr(""), alias="OPENAI_API_KEY")
+    openai_base_url: str = Field(default="", alias="OPENAI_BASE_URL")
+    recall_embedding_model: str = Field(
+        default="text-embedding-3-large", alias="RECALL_EMBEDDING_MODEL"
+    )
+    recall_embedding_price_per_million: float = Field(
+        default=0.13, alias="RECALL_EMBEDDING_PRICE_PER_MILLION"
+    )
+    recall_dir: Path = Field(default=BACKEND_ROOT / "data" / "recall", alias="RECALL_DIR")
+    unstructured_python: Path = Field(
+        default=BACKEND_ROOT / ".venv-unstructured" / "bin" / "python",
+        alias="UNSTRUCTURED_PYTHON",
+    )
+
+    # Local OpenSearch for FinanceBench retrieval (Rancher Desktop / docker compose).
+    opensearch_url: str = Field(default="https://localhost:9200", alias="OPENSEARCH_URL")
+    opensearch_user: str = Field(default="admin", alias="OPENSEARCH_USER")
+    opensearch_password: SecretStr = Field(
+        default=SecretStr(""), alias="OPENSEARCH_PASSWORD"
+    )
+    opensearch_verify_certs: bool = Field(default=False, alias="OPENSEARCH_VERIFY_CERTS")
+    opensearch_index_prefix: str = Field(
+        default="financebench-recall", alias="OPENSEARCH_INDEX_PREFIX"
+    )
+    recall_vector_dim: int = Field(default=3072, alias="RECALL_VECTOR_DIM")
+
+    @field_validator("minio_secure", "opensearch_verify_certs", mode="before")
     @classmethod
     def _secure_bool(cls, value: object) -> bool:
         return parse_bool(value)
@@ -71,6 +98,7 @@ class Settings(BaseSettings):
         "runs_dir",
         "artifacts_dir",
         "local_docs_dir",
+        "recall_dir",
         mode="before",
     )
     @classmethod
@@ -78,6 +106,16 @@ class Settings(BaseSettings):
         path = Path(str(value) if value is not None else ".")
         if not path.is_absolute():
             path = (BACKEND_ROOT / path).resolve()
+        return path
+
+    @field_validator("unstructured_python", mode="before")
+    @classmethod
+    def _unstructured_python_path(cls, value: object) -> Path:
+        # Do not Path.resolve() — that follows the venv symlink to the bare
+        # interpreter and drops site-packages (unstructured would be missing).
+        path = Path(str(value) if value is not None else ".")
+        if not path.is_absolute():
+            path = BACKEND_ROOT / path
         return path
 
     @field_validator("minio_prefix", mode="before")
@@ -107,8 +145,16 @@ class Settings(BaseSettings):
             self.runs_dir,
             self.artifacts_dir,
             self.local_docs_dir,
+            self.recall_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
+
+    def openai_configured(self) -> bool:
+        key = self.openai_api_key.get_secret_value().strip()
+        return bool(key) and key not in {"your-openai-api-key", "sk-..."}
+
+    def opensearch_index(self, pipeline: str) -> str:
+        return f"{self.opensearch_index_prefix}-{pipeline}"
 
     def minio_configured(self) -> bool:
         placeholders = {

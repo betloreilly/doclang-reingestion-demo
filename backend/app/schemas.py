@@ -72,9 +72,44 @@ class ManualPairRequest(BaseModel):
     page_count: Optional[int] = None
 
 
+class CompareExtractionVendor(BaseModel):
+    """Alternate PDF extraction vendor used only for cost comparison (not executed)."""
+
+    provider: str
+    price_per_1000_pages: float = Field(ge=0)
+    note: str = ""
+
+
+def default_compare_extraction_vendors() -> List["CompareExtractionVendor"]:
+    return [
+        CompareExtractionVendor(
+            provider="Unstructured.io",
+            price_per_1000_pages=15.0,
+            note="$0.015 / page (pay-as-you-go list rate)",
+        ),
+        CompareExtractionVendor(
+            provider="Azure Document Intelligence (Layout)",
+            price_per_1000_pages=10.0,
+            note="S0 prebuilt / Layout · $10 / 1,000 pages (Read is $1.50 / 1,000)",
+        ),
+        CompareExtractionVendor(
+            provider="Snowflake AI_PARSE_DOCUMENT (Layout, global)",
+            price_per_1000_pages=7.32,
+            note="Layout mode, global routing ($8.052 with regional routing)",
+        ),
+    ]
+
+
 class CostSettings(BaseModel):
     extraction_provider: str = "Docling SaaS"
     extraction_price_per_1000_pages: float = 4.0
+    # Alternate extraction vendors (Unstructured, Azure, Snowflake, …). Same page count.
+    compare_extraction_vendors: List[CompareExtractionVendor] = Field(
+        default_factory=default_compare_extraction_vendors
+    )
+    # Legacy single-compare fields (kept so older saved runs / clients still load).
+    compare_extraction_provider: Optional[str] = None
+    compare_extraction_price_per_page: Optional[float] = None
     paid_embedding_model: str = ""
     embedding_price_per_million_tokens: Optional[float] = None
     future_reingestions: int = 1
@@ -83,6 +118,23 @@ class CostSettings(BaseModel):
     ] = "tiktoken_cl100k"
     extraction_baseline_seconds: Optional[float] = None
     extraction_baseline_note: str = ""
+
+    @model_validator(mode="after")
+    def _migrate_legacy_compare(self) -> "CostSettings":
+        if self.compare_extraction_vendors:
+            return self
+        if (
+            self.compare_extraction_provider
+            and self.compare_extraction_price_per_page is not None
+        ):
+            self.compare_extraction_vendors = [
+                CompareExtractionVendor(
+                    provider=self.compare_extraction_provider,
+                    price_per_1000_pages=self.compare_extraction_price_per_page * 1000.0,
+                    note="Migrated from compare_extraction_price_per_page",
+                )
+            ]
+        return self
 
 
 class ProcessSettings(BaseModel):

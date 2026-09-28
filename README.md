@@ -7,46 +7,71 @@
 | [DocLang](https://github.com/doclang-project/doclang) ([doclang.ai](https://www.doclang.ai/)) | AI-native document format (spec + toolkit). Keeps structure, semantics, and layout in a form that works well for LLM / RAG pipelines. | We treat prepared DocLang (`.dclx`) as the **durable intermediate**: load → chunk → count tokens → estimate embedding cost. We do not re-extract the PDF. |
 | [Docling](https://github.com/docling-project/docling) (open source) / [Docling for IBM watsonx](https://www.ibm.com/products/docling) (SaaS) | Document conversion for gen AI. OSS toolkit prepares PDFs and other files; the managed service is priced from **USD 4 per 1,000 pages**. | **Docling SaaS** is the priced extraction step (PDF → DocLang). We load archives with [`docling-core`](https://pypi.org/project/docling-core/) (`DoclingDocument.load_from_doclang_archive`) — no OCR or layout inference in this app. |
 
-This demo is **aligned** with DocLang’s idea: once content is in DocLang, downstream work (chunking, embedding, indexing, evaluation) can reuse that representation instead of starting from the PDF again. We only measure the **cost side** of that story (extraction $ vs embedding $). We do not implement the DocLang validate/pack toolkit, and we do not run Docling extraction here.
+This demo is **aligned** with DocLang’s idea: once content is in DocLang, downstream work (chunking, embedding, indexing, evaluation) can reuse that representation instead of starting from the PDF again. We measure the **cost** of that story (extraction $ vs embedding $) and, in a second tab, **retrieval quality** on FinanceBench. We do not implement the DocLang validate/pack toolkit, and we do not run Docling extraction here.
 
 ---
 
-This demo answers one question:
+This demo answers two questions:
 
-**If I convert a PDF to DocLang with [Docling SaaS](https://www.ibm.com/products/docling), how does that extraction cost compare to embedding the text afterward?**
+1. **Cost:** If I convert a PDF to DocLang with [Docling SaaS](https://www.ibm.com/products/docling), how does that extraction cost compare to embedding the text afterward?
+2. **Quality:** On FinanceBench, does DocLang retrieve the right pages better than a fast Unstructured baseline (OpenSearch k-NN)?
 
 ---
 
 ## Why DocLang helps (business context)
 
-**Extraction (PDF → DocLang) is usually the expensive step.** Embedding the prepared text is cheap by comparison. On a large filing you often see something like:
+### The problem
 
-| Step | What it is | Typical share of combined $ |
-|------|------------|-----------------------------|
-| Extraction | Docling SaaS turns the PDF into DocLang | ~99% |
-| Embedding | Vectors from the DocLang text | ~1% |
+Many companies keep large PDF archives that almost never change: old filings, policies, manuals, historical knowledge bases. For RAG and search, those PDFs still need to be turned into text, chunked, and embedded.
+
+In practice, **most of the money goes to PDF extraction**, not to embeddings. On a long document you often see something like:
+
+| Step | What happens | Share of combined $ (typical) |
+|------|--------------|-------------------------------|
+| Extraction | Cloud parser turns PDF → structured text / DocLang | **~99%** |
+| Embedding | Create vectors from that text | **~1%** |
+
+So if you change chunk size, overlap, or the embedding model later, a normal pipeline often **parses the PDF again**. You pay the expensive step over and over. That is the re-ingestion trap: for example about **$0.74–$2.79 per document** on paid layout parsers, plus waiting on the network — every time you iterate.
 
 ![Example UI: PDF extraction vs embedding cost, with why DocLang helps](docs/cost-comparison-results.png)
 
-### Why reingest the same DocLang again?
+### The idea: parse once, reuse DocLang
 
-The PDF did not change. Downstream choices often do — and each change needs a new pass over the text, **not** a new PDF extraction.
+[Docling](https://www.ibm.com/products/docling) / [DocLang](https://www.doclang.ai/) gives you a prepared intermediate file (`.dclx`). You pay for layout/extraction **once**, keep that file, and later only re-chunk and re-embed locally.
 
-| Common reason to reingest | What you change | What stays the same |
-|---------------------------|-----------------|---------------------|
-| **New embedding model** | OpenAI → another provider, a newer model, or a local model (e.g. Qwen) | Same DocLang file |
-| **New chunking** | Chunk size, overlap, table packing — to improve retrieval | Same DocLang file |
-| **Rebuild / retarget the index** | Schema change, corrupted index, or a second search / RAG store | Same DocLang file |
-| **Development and iteration** | Whatever you are debugging today — chunk settings, model, prompts, index wiring. You often re-run the same documents dozens of times while building. | Same DocLang file |
-| **A/B or evaluation** | A planned comparison of two (or more) setups on a fixed set, to pick a production winner | Same DocLang file |
+```
+[ PDF archive ] ── parse once ──> [ DocLang cache ] ── re-chunk / re-embed ──> [ vector DB / OpenSearch ]
+                      │                     │                                      │
+                 paid extraction      local load (~seconds)                 cheap embedding $
+                 e.g. $0.74–$2.79     e.g. ~8.65 s on a 186-page filing    e.g. ~$0.004
+```
 
-Without reusable DocLang, each of those runs starts from the PDF again, so you pay **extraction + embedding** every time.
+For static PDFs, extraction stops being a recurring bill. It becomes a **one-time preparation cost**.
 
-With DocLang kept on hand, extraction is already paid. You load the same archive, re-chunk, re-embed — and mostly pay the **small embedding estimate**.
+### What you get
 
-**DocLang is the durable intermediate format.** Structure and text stay available without calling Docling SaaS again. That is why preparing once and reusing matters when extraction is 100×+ the embedding cost.
+| Advantage | In plain words |
+|-----------|----------------|
+| **No re-parse tax** | Same DocLang file; next runs skip Docling SaaS / other extraction vendors. Re-embedding a ~186-page filing can be about **$0.004** (`text-embedding-3-small`) instead of another full extraction bill. |
+| **Faster, predictable prep** | Local load → chunk → tokenize. No cloud queue for parsing. Dense filings can finish local prep in a few seconds (example: **~8.65 s** for 186 pages in this demo). |
+| **Easy to experiment** | Try a new embedding model, chunking, or index (including OpenSearch) without touching the PDF again. Useful for development, A/B tests, and rebuilds. |
 
-The UI shows this under the results as **Why DocLang helps for this document**, including the list of reingestion reasons and the estimated extraction avoided on the next run.
+### When do you reingest the same DocLang again?
+
+The PDF did not change. Your ML / search choices often do — and each change needs a new pass over the text, **not** a new PDF extraction.
+
+| Scenario | What you change | What you keep |
+|----------|-----------------|---------------|
+| **Different embedding model** | Switch provider, upgrade the model, or try a local model (e.g. Qwen) | Same DocLang |
+| **Different chunking** | Chunk size, overlap, or table packing — often to improve retrieval | Same DocLang |
+| **Rebuild / retarget the index** | Schema change, bad index, or a second search / RAG store (including OpenSearch) | Same DocLang |
+| **Development and iteration** | Settings, prompts, wiring — you often re-run the same documents many times while building | Same DocLang |
+| **A/B or evaluation** | Compare two or more embedding / chunking setups on a fixed document set and pick a production winner | Same DocLang |
+
+**Without DocLang:** each of those runs ≈ extraction $ + embedding $.  
+**With DocLang:** each run ≈ embedding $ only (extraction already paid).
+
+This app estimates those dollars from real page and token counts. The UI lists the same scenarios under **Why DocLang helps**. The **Retrieval quality** tab then checks whether DocLang also helps search (FinanceBench + OpenSearch), not only cost.
 
 ---
 
@@ -84,7 +109,7 @@ DocLang  ──(load → chunk → tokenize)──►  embedding $  = tokens / 1
   - **Paid-model tokens** (tiktoken `cl100k_base` by default, which is the tokenizer of OpenAI `text-embedding-3-*`). This number drives the embedding $.
   - **Local Qwen tokens** (exact, from the `Qwen/Qwen3-Embedding-0.6B` tokenizer). These are for reference only.
 
-With the defaults ($4 per 1,000 pages, `text-embedding-3-small` at $0.02 per 1M tokens), extraction is usually more than 100× the embedding cost for long financial filings.
+With the defaults (Docling SaaS **$4 / 1,000 pages**, Unstructured.io **$15 / 1,000 pages**, Azure Document Intelligence Layout **$10 / 1,000 pages**, Snowflake AI_PARSE_DOCUMENT Layout global **$7.32 / 1,000 pages**, `text-embedding-3-small` at $0.02 / 1M tokens), Docling extraction is usually the cheapest of these layout-class options for the same page count, and every extraction option is still far larger than embedding for long filings.
 
 ---
 
@@ -103,40 +128,6 @@ Chunk settings change the token count, so it is useful to know what happens:
 More overlap means more tokens, and so a higher embedding $. The difference is small compared to extraction.
 
 ---
-
-## How the code is organized
-
-```
-doclang-reingestion-demo/
-├── package.json             Shortcuts: npm run backend | frontend | test
-├── backend/                 Python FastAPI API (port 8000)
-│   ├── app/
-│   │   ├── main.py          HTTP routes (/api/...)
-│   │   ├── config.py        Reads backend/.env
-│   │   ├── minio_service.py List and download objects (read-only)
-│   │   ├── local_source.py  Scan data/cache and LOCAL_DOCS_DIR
-│   │   ├── pairing.py       Match DocLang ↔ PDF by file name
-│   │   ├── cache.py         Safe download paths under data/cache
-│   │   ├── pages.py         PDF page count (pypdf) or DocLang pages
-│   │   ├── doclang_loader.py  Load .dclx with docling-core
-│   │   ├── chunking.py      Split markdown into chunks
-│   │   ├── tokens.py        Qwen tokenizer + paid-model token estimate
-│   │   ├── embeddings.py    Optional local Qwen embeddings (slow on CPU)
-│   │   ├── cost.py          Dollar formulas and ratios
-│   │   ├── jobs.py          Background jobs (one benchmark at a time)
-│   │   └── schemas.py       Request and response models
-│   ├── tests/
-│   ├── data/cache/          Downloaded files (gitignored)
-│   ├── data/local/          Your own local copies (gitignored)
-│   ├── data/runs/           Saved run results as JSON (gitignored)
-│   ├── .env.example
-│   └── requirements.txt
-└── frontend/                Next.js UI (port 3000)
-    └── src/
-        ├── app/page.tsx                          Main dashboard
-        ├── components/CostComparisonResults.tsx  Cost results
-        └── lib/api.ts                            API client and types
-```
 
 ### What happens when you click "Estimate cost"
 
@@ -269,8 +260,11 @@ From the repo root you can also use `npm run backend`, `npm run frontend` and `n
 4. If the PDF match is ambiguous, pick the PDF by hand. You can also type the page count.
 5. Keep **Run purpose → Cost estimate only (skip embedding)**.
 6. In **PDF extraction vs. embedding cost**, check the prices:
-   - Docling SaaS price (default $4 per 1,000 pages)
-   - Embedding model and price (default `text-embedding-3-small`, $0.02 per 1M tokens)
+   - Docling SaaS (default $4 / 1,000 pages)
+   - Unstructured.io (default $15 / 1,000 pages = $0.015 / page)
+   - Azure Document Intelligence Layout (default $10 / 1,000 pages)
+   - Snowflake AI_PARSE_DOCUMENT Layout, global routing (default $7.32 / 1,000 pages)
+   - Embedding model and price (default `text-embedding-3-small`, $0.02 / 1M tokens)
 7. Click **Estimate cost (no embedding)**.
 8. Read the three cards (extraction, embedding, total), the ratio sentence, and the **Why DocLang helps** box (without vs with reusable DocLang).
 9. You can change the prices after the run. The costs and the business takeaway update instantly, with no new run.
@@ -281,19 +275,218 @@ From the repo root you can also use `npm run backend`, `npm run frontend` and `n
 ## Cost formulas (estimates, not bills)
 
 ```
-extraction_cost = page_count / 1000 × extraction_price_per_1000_pages
-embedding_cost  = paid_model_tokens / 1,000,000 × embedding_price_per_million_tokens
-total_cost      = extraction_cost + embedding_cost
-ratio           = extraction_cost / embedding_cost
+docling_extraction   = page_count / 1000 × $4.00          # USD / 1,000 pages
+unstructured_extract = page_count / 1000 × $15.00         # $0.015 / page
+azure_layout         = page_count / 1000 × $10.00         # Azure DI Layout / prebuilt
+snowflake_layout     = page_count / 1000 × $7.32          # AI_PARSE_DOCUMENT Layout, global
+embedding_cost       = paid_model_tokens / 1,000,000 × embedding_price_per_million_tokens
+total_with_docling   = docling_extraction + embedding_cost
+ratio                = docling_extraction / embedding_cost
 ```
 
+Azure Document Intelligence ([pricing](https://azure.microsoft.com/en-us/pricing/details/document-intelligence/)) also lists Read at $1.50 / 1,000 pages (0–1M) and custom extraction at $30 / 1,000 pages — edit the rate in the UI if you want those SKUs. Snowflake regional routing is $8.052 / 1,000 pages.
 Notes:
 
 - Prices are **your assumptions**. You can edit them in the UI. The app does not check real invoices.
-- No paid API is called. Token counts are local estimates, and the UI shows which method was used.
+- The cost estimate calls no paid API. Token counts are local estimates, and the UI shows which method was used. (Only the optional recall comparison below calls OpenAI, and only when you click its run button.)
 - Storage, network and your own compute are **not** included.
 - If a selected document has no page count, the run is marked **partial** and a warning says which document is missing. The extraction $ would be too low otherwise.
 - If DocLang already exists, reusing it means you do not pay extraction again. The results page shows this in a small "reuse" section.
+
+---
+
+## Retrieval quality: DocLang vs Unstructured (FinanceBench)
+
+The cost tab asks: “Is extraction expensive?”  
+This tab asks: **“When we search, do we still find the right PDF page?”**
+
+We use the same questions, the same chunk size, and the same embedding model.  
+We only change how text was taken from the PDF:
+
+| Pipeline | Where the text comes from |
+|----------|---------------------------|
+| **DocLang** | Prepared `.dclx` file (already extracted earlier) |
+| **Unstructured** | Same PDF, open-source `partition_pdf` with strategy `fast` |
+
+If DocLang finds the right page more often, better structure (headings, tables) is helping search — not a different chunker or model.
+
+### Example question (from FinanceBench)
+
+The open dataset has **150 questions** on **84 SEC filings**.  
+Source: [FinanceBench](https://github.com/patronus-ai/financebench) ([paper](https://arxiv.org/abs/2311.11944)).  
+We download `financebench_open_source.jsonl` once into `backend/data/recall/financebench/`.
+
+One real row looks like this (shortened):
+
+```json
+{
+  "financebench_id": "financebench_id_03029",
+  "doc_name": "3M_2018_10K",
+  "question_type": "metrics-generated",
+  "question": "What is the FY2018 capital expenditure amount (in USD millions) for 3M? … cash flow statement.",
+  "answer": "$1577.00",
+  "evidence": [
+    {
+      "evidence_page_num": 59,
+      "evidence_text": "… Purchases of property, plant and equipment … (1,577) …"
+    }
+  ]
+}
+```
+
+How we use it:
+
+1. The **question** text is what we search with.
+2. **`doc_name`** says which filing holds the answer (`3M_2018_10K`).
+3. FinanceBench stores pages as **0-based** (`59`). We turn that into **PDF page 60** (`+ 1`) so it matches the PDF, DocLang, and Unstructured. See `backend/app/recall/dataset.py`.
+4. A search **hit** means: in the top chunks we returned, at least one chunk is from that document **and** that page (here: `3M_2018_10K`, page **60**).
+
+Other question types in the file: `domain-relevant`, `novel-generated`. The UI can show scores per type.
+
+### Simple picture
+
+```
+FinanceBench question
+        │
+        ▼
+  embed the question  ──┐
+                        │  find closest chunks
+  PDF / DocLang text → chunks → embed chunks ──┘
+                        │
+                        ▼
+              top chunks (each has a page number)
+                        │
+                        ▼
+         is the labeled evidence page in the top k?
+```
+
+Code map (open these files to follow the flow):
+
+| Step | What happens | File |
+|------|----------------|------|
+| Load questions | Read JSONL, page `+ 1` | `backend/app/recall/dataset.py` |
+| DocLang → pages | Group items by page; keep headings/tables | `extract.py` → `doclang_pages` |
+| Unstructured → pages | Group PDF elements by `page_number` | `extract.py` → `unstructured_pages` |
+| Fix DocLang pages | If archive skipped a PDF page, remap | `extract.py` → `align_to_pdf_pages` |
+| Chunk | Same chunker; **one page per chunk** | `extract.py` → `page_chunks` |
+| Embed | OpenAI `text-embedding-3-large`, cache on disk | `embed.py` |
+| Search + score | Top-k chunks, then Hit@k | `metrics.py`, `runner.py` |
+| OpenSearch path | Same score idea, search with k-NN | `opensearch_store.py`, `evaluate_opensearch.py` |
+
+### Two ways we search
+
+**All filings together (global)**  
+Search chunks from all 84 documents. Harder: the system must pick the right company and year, then the right page.
+
+**One filing at a time (per-document)**  
+Search only inside `3M_2018_10K` for that question. Easier: the document is already known.
+
+In the UI, use the buttons **All filings together** / **One filing at a time**.
+
+### What Hit@k means (same example)
+
+We embed the question and find the closest chunks. Each chunk knows its page.
+
+One page is often split into several chunks. If we ranked chunks directly, the same wrong page could take two or three of the top slots. So we keep only the **best chunk of each page** and rank **pages**. Top 5 always means 5 different pages. See `unique_pages` in `metrics.py`.
+
+For question `03029`, the labeled page is **60**.
+
+- DocLang returns pages like `47, 60, 61, …` → first good page at rank **2** → **Hit@3** and **Hit@5** (not Hit@1).
+- If Unstructured first shows page 60 at rank **8** → Hit@5 = no, Hit@10 = yes.
+
+**Hit@5** on the summary card means:  
+“Out of 150 questions, how many had the right page somewhere in the top 5 pages?”
+
+Full run (150 questions, OpenSearch):
+
+| Search scope | | Top 1 | Top 5 | Top 10 |
+|--------------|---|-------|-------|--------|
+| All filings | DocLang | 24.0% | 50.7% | 66.0% |
+| | Unstructured | 16.0% | 46.0% | 59.3% |
+| One filing | DocLang | 35.3% | 76.0% | 87.3% |
+| | Unstructured | 34.0% | 72.7% | 86.0% |
+
+Top 1 is low for both: vector search often puts a related page first (for `03029`, page 47 before page 60). Keyword search or a reranker would help Top 1; this demo uses vector search only.
+
+~50% for “all filings” is normal when you only use vector search (no keyword search, no reranker) over 84 long filings.  
+Always compare DocLang vs Unstructured **in the same scope**.
+
+On this same question in a real run: across all filings, DocLang put page 60 at rank **3** (Hit@5 yes); Unstructured did not put it in the top 10 (Hit@5 no). The UI explorer lists **only DocLang**, **only Unstructured**, **both**, or **both missed**.
+
+### Extra check (no embeddings)
+
+We also ask: “Is the evidence text actually on that page after extraction?”  
+That is **evidence coverage** (`extract.py` → `evidence_coverage`). It only checks word overlap. No OpenAI call.
+
+### Setup (one time)
+
+Unstructured runs in its own venv so its packages do not mix with the app:
+
+```bash
+cd backend
+python3.12 -m venv .venv-unstructured
+.venv-unstructured/bin/pip install -r requirements-unstructured.txt
+```
+
+Put your key in `backend/.env` (gitignored). The backend reads it; the browser never sees it.
+
+```env
+OPENAI_API_KEY=your-openai-api-key
+RECALL_EMBEDDING_MODEL=text-embedding-3-large
+RECALL_EMBEDDING_PRICE_PER_MILLION=0.13
+```
+
+**Local OpenSearch** (Rancher Desktop / Docker). From the repo root:
+
+```bash
+docker compose up -d
+# https://localhost:9200  · Dashboards http://localhost:5601
+# First export OPENSEARCH_INITIAL_ADMIN_PASSWORD (strong value of your choosing),
+# then put the same value in backend/.env as OPENSEARCH_PASSWORD.
+```
+
+```env
+OPENSEARCH_URL=https://localhost:9200
+OPENSEARCH_USER=admin
+OPENSEARCH_PASSWORD=
+OPENSEARCH_VERIFY_CERTS=false
+OPENSEARCH_INDEX_PREFIX=financebench-recall
+```
+
+### How to run it
+
+UI buttons, in order:
+
+1. **Estimate** — build chunks, count tokens, show embedding $ before you pay.
+2. **Run comparison** — embed + score in memory.
+3. **Ingest OpenSearch** — load vectors into local indexes.
+4. **Score OpenSearch** — same questions, search with OpenSearch k-NN.
+
+Or in a terminal:
+
+```bash
+cd backend
+.venv/bin/python scripts/run_recall.py --estimate
+.venv/bin/python scripts/run_recall.py
+.venv/bin/python scripts/ingest_recall_opensearch.py
+.venv/bin/python scripts/evaluate_opensearch.py --save
+```
+
+Results go to `backend/data/recall/runs/<run_id>.json` (gitignored).  
+Open a run file and search for `financebench_id_03029` to see the question, evidence pages, and top chunks.
+
+### When DocLang page numbers need a fix
+
+Some `.dclx` files drop a PDF page and renumber the rest. FinanceBench still points at the **PDF** page. Without a fix, DocLang would look wrong only because of numbering.
+
+We remap DocLang pages to the PDF using the PDF text layer (`align_to_pdf_pages` in `extract.py`). Unstructured reads the PDF, so it does not need this. Remapped docs are listed in the run JSON under `doclang_page_realignment`.
+
+### How to read the scores
+
+- A few points difference on 150 questions can be noise. Use the explorer, not only the big %.
+- Both pipelines often miss the same hard questions.
+- We only test Unstructured `fast`. Other Unstructured modes are not in this demo.
+- Page `+ 1`, Hit@k, and top-k are covered in `backend/tests/test_recall.py`.
 
 ---
 
@@ -305,7 +498,7 @@ source .venv/bin/activate
 pytest -q
 ```
 
-The tests cover config parsing, file pairing, cache path safety, chunking (overlap, headings, tables), cost formulas, and loading a DocLang archive without PDF extraction.
+The tests cover config parsing, file pairing, cache path safety, chunking (overlap, headings, tables), cost formulas, and loading a DocLang archive without PDF extraction. `tests/test_recall.py` covers the FinanceBench page mapping, per-page chunking, top-k retrieval against brute force, metric math, embedding-cache invalidation, and API-key scrubbing. None of the tests call OpenAI.
 
 ---
 

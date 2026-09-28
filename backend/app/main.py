@@ -14,6 +14,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import ENV_FILE, env_file_present, get_settings, reload_settings
 from .jobs import get_manager
+from .recall.ingest import IngestRequest
+from .recall.runner import RecallRequest, get_recall_manager
 from .schemas import (
     DownloadRequest,
     ManualPairRequest,
@@ -67,6 +69,10 @@ def reload_connection() -> Dict[str, Any]:
     from . import jobs as jobs_mod
 
     jobs_mod._manager = None
+    from .recall import runner as recall_mod
+
+    if not recall_mod.get_recall_manager().status()["running"]:
+        recall_mod._manager = None
     return connection_status()
 
 
@@ -255,6 +261,96 @@ def export_run(run_id: str, format: str = "json"):
     raise HTTPException(status_code=400, detail="format must be json or csv")
 
 
+@app.get("/api/recall/status")
+def recall_status() -> Dict[str, Any]:
+    return get_recall_manager().status()
+
+
+@app.post("/api/recall/jobs")
+def start_recall(req: RecallRequest) -> Dict[str, Any]:
+    bench_busy = get_manager()._bench_lock.locked()
+    try:
+        job = get_recall_manager().start(req, bench_busy=bench_busy)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return job.model_dump()
+
+
+@app.get("/api/recall/jobs/{job_id}")
+def get_recall_job(job_id: str) -> Dict[str, Any]:
+    try:
+        return get_recall_manager().get_job(job_id).model_dump()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+
+
+@app.get("/api/recall/runs")
+def list_recall_runs() -> Dict[str, Any]:
+    return {"runs": get_recall_manager().list_runs()}
+
+
+@app.get("/api/recall/runs/{run_id}")
+def get_recall_run(run_id: str) -> Dict[str, Any]:
+    try:
+        path = get_recall_manager().run_path(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+    return json.loads(path.read_text())
+
+
+@app.get("/api/recall/opensearch/status")
+def recall_opensearch_status() -> Dict[str, Any]:
+    from .recall.opensearch_store import connection_status
+
+    return connection_status()
+
+
+@app.post("/api/recall/opensearch/ingest")
+def start_opensearch_ingest(req: IngestRequest) -> Dict[str, Any]:
+    from .recall.ingest import start_ingest
+
+    try:
+        job = start_ingest(req)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return job.model_dump()
+
+
+@app.get("/api/recall/opensearch/ingest/{job_id}")
+def get_opensearch_ingest_job(job_id: str) -> Dict[str, Any]:
+    from .recall.ingest import get_ingest_job
+
+    try:
+        return get_ingest_job(job_id).model_dump()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+
+
+@app.post("/api/recall/opensearch/evaluate")
+def evaluate_via_opensearch(max_documents: Optional[int] = None) -> Dict[str, Any]:
+    """Score FinanceBench questions via OpenSearch k-NN and save a recall run."""
+    import uuid
+    from datetime import datetime, timezone
+
+    from .recall.evaluate_opensearch import evaluate_opensearch
+
+    try:
+        result = evaluate_opensearch(max_documents=max_documents)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    run_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    result["run_id"] = run_id
+    result["created_at"] = now
+    result["finished_at"] = now
+    mgr = get_recall_manager()
+    mgr.runs_dir.mkdir(parents=True, exist_ok=True)
+    (mgr.runs_dir / f"{run_id}.json").write_text(json.dumps(result, indent=2))
+    return result
+
+
 @app.get("/api/meta")
 def meta() -> Dict[str, Any]:
     s = get_settings()
@@ -263,8 +359,9 @@ def meta() -> Dict[str, Any]:
         "default_extraction_price_per_1000_pages": 4.0,
         "bucket": s.minio_bucket,
         "prefix": s.minio_prefix,
+        "opensearch_url": s.opensearch_url,
         "notes": [
             "PDF extraction, DocLang generation, OCR, and layout inference are out of scope.",
-            "Embeddings run locally; paid API calls are not executed.",
+            "Cost estimates do not call paid APIs. Recall embeddings and OpenSearch retrieval are optional.",
         ],
     }

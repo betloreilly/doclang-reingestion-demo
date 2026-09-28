@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/card";
 import { Badge, Input, Label } from "@/components/ui/input";
 import { CostComparisonResults } from "@/components/CostComparisonResults";
+import { RecallComparison } from "@/components/RecallComparison";
 
 const defaultSettings: ProcessSettings = {
   chunk_size: 1000,
@@ -31,6 +32,23 @@ const defaultSettings: ProcessSettings = {
   cost: {
     extraction_provider: "Docling SaaS",
     extraction_price_per_1000_pages: 4.0,
+    compare_extraction_vendors: [
+      {
+        provider: "Unstructured.io",
+        price_per_1000_pages: 15.0,
+        note: "$0.015 / page (pay-as-you-go list rate)",
+      },
+      {
+        provider: "Azure Document Intelligence (Layout)",
+        price_per_1000_pages: 10.0,
+        note: "S0 prebuilt / Layout · $10 / 1,000 pages (Read is $1.50 / 1,000)",
+      },
+      {
+        provider: "Snowflake AI_PARSE_DOCUMENT (Layout, global)",
+        price_per_1000_pages: 7.32,
+        note: "Layout mode, global routing ($8.052 with regional routing)",
+      },
+    ],
     paid_embedding_model: "text-embedding-3-small",
     embedding_price_per_million_tokens: 0.02,
     future_reingestions: 1,
@@ -41,6 +59,7 @@ const defaultSettings: ProcessSettings = {
 };
 
 export default function DashboardPage() {
+  const [demoTab, setDemoTab] = useState<"cost" | "retrieval">("cost");
   const [connection, setConnection] = useState<ConnectionStatus | null>(null);
   const [documents, setDocuments] = useState<DocumentPair[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -223,31 +242,67 @@ export default function DashboardPage() {
       ) : null}
 
       <header className="border-b border-slate-200/80 bg-white/80 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-6 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-teal-700">
-              DocLang · Reingestion
-            </p>
-            <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight text-slate-900 sm:text-4xl">
-              DocLang Reingestion Savings
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-600">
-              Measure reuse of prepared DocLang artifacts: download → load →
-              chunk → tokenize → embed. PDF extraction is out of scope; savings
-              are estimated from page counts and pricing assumptions.
-            </p>
+        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-6">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-teal-700">
+                DocLang · Reingestion
+              </p>
+              <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight text-slate-900 sm:text-4xl">
+                DocLang demos
+              </h1>
+              <p className="mt-2 max-w-2xl text-sm text-slate-600">
+                Parse PDFs once into DocLang, then compare extraction $ vs embedding $,
+                and check retrieval quality — without paying to re-parse every time.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => loadConnection()} disabled={busy}>
+                Refresh connection
+              </Button>
+              {demoTab === "cost" ? (
+                <Button
+                  variant="secondary"
+                  onClick={() => loadDocuments(true)}
+                  disabled={busy}
+                >
+                  Refresh listing
+                </Button>
+              ) : null}
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="outline" onClick={() => loadConnection()} disabled={busy}>
-              Refresh connection
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={() => loadDocuments(true)}
-              disabled={busy}
+
+          <div
+            role="tablist"
+            aria-label="Demo"
+            className="flex w-full max-w-xl rounded-lg border border-slate-200 bg-slate-50 p-1"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={demoTab === "cost"}
+              className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition ${
+                demoTab === "cost"
+                  ? "bg-white text-teal-900 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+              onClick={() => setDemoTab("cost")}
             >
-              Refresh listing
-            </Button>
+              Extraction cost vs embedding
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={demoTab === "retrieval"}
+              className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition ${
+                demoTab === "retrieval"
+                  ? "bg-white text-teal-900 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+              onClick={() => setDemoTab("retrieval")}
+            >
+              Retrieval quality
+            </button>
           </div>
         </div>
       </header>
@@ -259,6 +314,13 @@ export default function DashboardPage() {
           </div>
         ) : null}
 
+        {demoTab === "retrieval" ? (
+          <RecallComparison
+            chunkSize={settings.chunk_size}
+            chunkOverlap={settings.chunk_overlap}
+          />
+        ) : (
+          <>
         {/* Connection */}
         <Card>
           <CardHeader>
@@ -782,15 +844,25 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* History */}
-        <Card>
-          <CardHeader>
-            <CardTitle>History</CardTitle>
-            <CardDescription>
-              Runs saved under backend/data/runs/.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
+        {/* History — collapsed until opened */}
+        <details className="group rounded-xl border border-slate-200 bg-white shadow-sm open:shadow">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-6 py-4 [&::-webkit-details-marker]:hidden">
+            <div>
+              <p className="text-base font-semibold text-slate-900">History</p>
+              <p className="mt-0.5 text-sm text-slate-500">
+                {history.length
+                  ? `${history.length} saved run${history.length === 1 ? "" : "s"} under backend/data/runs/`
+                  : "No saved runs yet"}
+                {" · "}
+                <span className="text-slate-400 group-open:hidden">click to show</span>
+                <span className="hidden text-slate-400 group-open:inline">click to hide</span>
+              </p>
+            </div>
+            <span className="text-slate-400 transition group-open:rotate-180" aria-hidden>
+              ▾
+            </span>
+          </summary>
+          <div className="border-t border-slate-100 px-6 py-4">
             {!history.length ? (
               <p className="text-sm text-slate-500">No saved runs yet.</p>
             ) : (
@@ -846,8 +918,10 @@ export default function DashboardPage() {
                 </table>
               </div>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </details>
+          </>
+        )}
       </main>
     </div>
   );

@@ -12,5 +12,7 @@ transformers==5.17.0
 torch==2.14.0
 tiktoken==0.14.0
 httpx==0.28.1
+openai==3.19.2
+opensearch-py==3.0.0
 numpy==2.5.3
 pytest==9.1.1

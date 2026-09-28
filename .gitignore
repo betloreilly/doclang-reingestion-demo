@@ -16,6 +16,7 @@
 # Python
 # ---------------------------------------------------------------------------
 backend/.venv/
+backend/.venv-unstructured/
 .venv/
 venv/
 **/__pycache__/
@@ -42,6 +43,7 @@ yarn-error.log*
 backend/data/cache/
 backend/data/artifacts/
 backend/data/runs/
+backend/data/recall/
 backend/data/local/**
 !backend/data/local/.gitkeep
 !backend/data/.gitkeep

@@ -1,7 +1,11 @@
 "use client";
 
 import { formatInt, formatPct, formatRatio, formatSeconds, formatUsd } from "@/lib/utils";
-import type { ProcessSettings, RunResult } from "@/lib/api";
+import type {
+  CompareExtractionVendor,
+  ProcessSettings,
+  RunResult,
+} from "@/lib/api";
 import { Badge, Input, Label } from "@/components/ui/input";
 import {
   Card,
@@ -12,6 +16,47 @@ import {
 } from "@/components/ui/card";
 import { client } from "@/lib/api";
 
+const COMPARE_BAR_COLORS = ["bg-amber-500", "bg-violet-500", "bg-rose-500", "bg-orange-500"];
+
+const DEFAULT_COMPARE_VENDORS: CompareExtractionVendor[] = [
+  {
+    provider: "Unstructured.io",
+    price_per_1000_pages: 15.0,
+    note: "$0.015 / page (pay-as-you-go list rate)",
+  },
+  {
+    provider: "Azure Document Intelligence (Layout)",
+    price_per_1000_pages: 10.0,
+    note: "S0 prebuilt / Layout · $10 / 1,000 pages (Read is $1.50 / 1,000)",
+  },
+  {
+    provider: "Snowflake AI_PARSE_DOCUMENT (Layout, global)",
+    price_per_1000_pages: 7.32,
+    note: "Layout mode, global routing ($8.052 with regional routing)",
+  },
+];
+
+function resolveCompareVendors(
+  cost: ProcessSettings["cost"]
+): CompareExtractionVendor[] {
+  if (cost.compare_extraction_vendors && cost.compare_extraction_vendors.length > 0) {
+    return cost.compare_extraction_vendors;
+  }
+  if (
+    cost.compare_extraction_provider &&
+    cost.compare_extraction_price_per_page != null
+  ) {
+    return [
+      {
+        provider: cost.compare_extraction_provider,
+        price_per_1000_pages: cost.compare_extraction_price_per_page * 1000,
+        note: "Migrated from USD / page",
+      },
+    ];
+  }
+  return DEFAULT_COMPARE_VENDORS;
+}
+
 function tokenMethodLabel(method: ProcessSettings["cost"]["paid_token_method"]): {
   label: string;
   exact: boolean;
@@ -19,63 +64,24 @@ function tokenMethodLabel(method: ProcessSettings["cost"]["paid_token_method"]):
   switch (method) {
     case "tiktoken_cl100k":
       return {
-        label: "tiktoken cl100k_base (OpenAI-compatible encoding)",
+        label: "tiktoken cl100k_base",
         exact: true,
       };
     case "tiktoken_o200k":
       return {
-        label: "tiktoken o200k_base (OpenAI-compatible encoding)",
+        label: "tiktoken o200k_base",
         exact: true,
       };
     case "same_as_local":
       return {
-        label: "proxy: same count as local Qwen tokenizer",
+        label: "same as local Qwen tokenizer",
         exact: false,
       };
     case "chars_div_4":
-      return { label: "approximate proxy: characters ÷ 4", exact: false };
+      return { label: "characters ÷ 4", exact: false };
     default:
       return { label: String(method), exact: false };
   }
-}
-
-function CostHeroCard({
-  title,
-  amount,
-  basis,
-  footnote,
-  accent,
-}: {
-  title: string;
-  amount: string;
-  basis: string;
-  footnote?: string;
-  accent: "teal" | "sky" | "slate";
-}) {
-  const tones = {
-    teal: "border-teal-200 bg-gradient-to-br from-teal-50 to-white",
-    sky: "border-sky-200 bg-gradient-to-br from-sky-50 to-white",
-    slate: "border-slate-200 bg-gradient-to-br from-slate-50 to-white",
-  };
-  return (
-    <div className={`rounded-xl border p-5 shadow-sm ${tones[accent]}`}>
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-semibold text-slate-800">{title}</p>
-        <Badge className="border-amber-200 bg-amber-50 text-amber-900">
-          Estimated
-        </Badge>
-      </div>
-      <p className="mt-3 font-display text-3xl font-semibold tabular-nums tracking-tight text-slate-900">
-        {amount}
-      </p>
-      <p className="mt-2 text-xs leading-relaxed text-slate-600">{basis}</p>
-      {footnote ? (
-        <p className="mt-3 border-t border-slate-200/80 pt-2 text-[11px] leading-relaxed text-slate-500">
-          {footnote}
-        </p>
-      ) : null}
-    </div>
-  );
 }
 
 export function CostComparisonResults({
@@ -88,13 +94,16 @@ export function CostComparisonResults({
   onSettingsChange: (next: ProcessSettings) => void;
 }) {
   const pages = result?.pages_total ?? 0;
-  const localTokens = result?.local_tokens_total ?? 0;
   const paidTokens = result?.paid_tokens_total ?? null;
   const prepSeconds =
     result?.stage_timings?.find((t) => t.name === "process_excluding_download")
       ?.seconds ?? null;
   const embedSkipped = Boolean(result?.embedding_meta?.skipped);
   const chunkCount = result?.chunks_total ?? 0;
+  const tokensPerPage =
+    pages > 0 && paidTokens != null && paidTokens > 0
+      ? paidTokens / pages
+      : null;
 
   const pageSources = Array.from(
     new Set(
@@ -107,21 +116,19 @@ export function CostComparisonResults({
     if (pageSources.length === 0) return "unavailable";
     if (pageSources.length === 1) {
       const s = pageSources[0];
-      if (s === "pdf") return "original PDF (page count only — no re-extraction)";
-      if (s === "doclang_pages") return "DocLang page metadata";
-      if (s === "manual") return "manual entry";
+      if (s === "pdf") return "PDF page count";
+      if (s === "doclang_pages") return "DocLang pages";
+      if (s === "manual") return "manual";
       return s;
     }
     return pageSources.join(", ");
   })();
-  const pageFromPdf = pageSources.length > 0 && pageSources.every((s) => s === "pdf");
 
   const extractionRate = settings.cost.extraction_price_per_1000_pages;
   const embeddingRate = settings.cost.embedding_price_per_million_tokens;
   const extractionProvider =
     settings.cost.extraction_provider || "Docling SaaS";
-  const embeddingModel =
-    settings.cost.paid_embedding_model || "paid embedding model";
+  const compareVendors = resolveCompareVendors(settings.cost);
 
   const extractionCost =
     result != null ? (pages / 1000) * extractionRate : null;
@@ -132,10 +139,29 @@ export function CostComparisonResults({
     !Number.isNaN(embeddingRate)
       ? (paidTokens / 1_000_000) * embeddingRate
       : null;
+  const compareRows = compareVendors.map((vendor, index) => {
+    const cost =
+      result != null && !Number.isNaN(vendor.price_per_1000_pages)
+        ? (pages / 1000) * vendor.price_per_1000_pages
+        : null;
+    const total =
+      cost != null && embeddingCost != null ? cost + embeddingCost : null;
+    return {
+      ...vendor,
+      index,
+      extractionCost: cost,
+      totalCost: total,
+      barColor: COMPARE_BAR_COLORS[index % COMPARE_BAR_COLORS.length],
+    };
+  });
   const totalCost =
     extractionCost != null && embeddingCost != null
       ? extractionCost + embeddingCost
       : null;
+  const maxVendorTotal = Math.max(
+    totalCost ?? 0,
+    ...compareRows.map((r) => r.totalCost ?? 0)
+  );
 
   const ratio =
     extractionCost != null && embeddingCost != null && embeddingCost > 0
@@ -150,34 +176,9 @@ export function CostComparisonResults({
       ? (embeddingCost / totalCost) * 100
       : null;
 
-  // Paid tokens were counted during the run, so label them with the run's method.
   const method = tokenMethodLabel(
     result?.settings?.cost?.paid_token_method ?? settings.cost.paid_token_method,
   );
-  const comparisonSentence = (() => {
-    if (extractionCost == null) {
-      return "Run a document to estimate extraction and embedding costs.";
-    }
-    if (pages <= 0 && (paidTokens == null || paidTokens <= 0)) {
-      return "No measured page or token counts yet. Select a DocLang file and run Estimate cost so the comparison can use document size.";
-    }
-    if (paidTokens == null) {
-      return "Embedding tokens are missing from this run, so embedding cost cannot be estimated. Re-run Estimate cost on a selected document.";
-    }
-    if (embeddingRate == null || Number.isNaN(embeddingRate)) {
-      return "Enter an embedding price per million tokens to compare extraction with embedding.";
-    }
-    if (embeddingCost == null) {
-      return "Unable to compute embedding cost with the current inputs.";
-    }
-    if (embeddingCost === 0) {
-      return "Embedding cost is zero with the current assumptions, so a ratio is not shown.";
-    }
-    if (ratio == null || extractionPctOfTotal == null) {
-      return "Unable to compute the extraction-versus-embedding comparison.";
-    }
-    return `Extraction costs approximately ${formatRatio(ratio)} as much as embedding and accounts for ${formatPct(extractionPctOfTotal)} of the combined estimated cost.`;
-  })();
 
   const businessTakeaway = (() => {
     if (
@@ -188,35 +189,42 @@ export function CostComparisonResults({
     ) {
       return null;
     }
+    const ts = result?.time_savings;
+    const loadSeconds = ts?.doclang_load_seconds ?? null;
+    const baselineSeconds = ts?.available ? ts.baseline_seconds ?? null : null;
+    const stageSavings =
+      ts?.available && ts.estimated_extraction_stage_savings_seconds != null
+        ? ts.estimated_extraction_stage_savings_seconds
+        : null;
     return {
       ratioLabel: formatRatio(ratio),
       extractionShare: formatPct(extractionPctOfTotal),
       extractionUsd: formatUsd(extractionCost, 2),
       embeddingUsd: formatUsd(embeddingCost, 4),
-      savingsUsd: formatUsd(extractionCost, 2),
+      prepLabel: formatSeconds(prepSeconds),
+      loadLabel: loadSeconds != null ? formatSeconds(loadSeconds) : null,
+      baselineLabel:
+        baselineSeconds != null ? formatSeconds(baselineSeconds) : null,
+      stageSavingsLabel:
+        stageSavings != null ? formatSeconds(stageSavings) : null,
     };
   })();
-
-  // Stacked bar: ensure embedding remains visible when tiny (labels show exact %)
-  const visualExtraction =
-    extractionPctOfTotal != null ? Math.max(0, extractionPctOfTotal) : 0;
-  const visualEmbeddingRaw =
-    embeddingPctOfTotal != null && embeddingPctOfTotal > 0
-      ? Math.max(embeddingPctOfTotal, 1.5)
-      : 0;
-  const visualTotal = visualExtraction + visualEmbeddingRaw;
-  const visualEmbedding =
-    visualTotal > 100 && visualEmbeddingRaw > 0
-      ? Math.max(1.5, 100 - visualExtraction)
-      : visualEmbeddingRaw;
-  const visualExtractionFinal =
-    visualEmbedding > 0 ? 100 - visualEmbedding : visualExtraction;
 
   const updateCost = (patch: Partial<ProcessSettings["cost"]>) => {
     onSettingsChange({
       ...settings,
       cost: { ...settings.cost, ...patch },
     });
+  };
+
+  const updateCompareVendor = (
+    index: number,
+    patch: Partial<CompareExtractionVendor>
+  ) => {
+    const next = compareVendors.map((v, i) =>
+      i === index ? { ...v, ...patch } : v
+    );
+    updateCost({ compare_extraction_vendors: next });
   };
 
   return (
@@ -226,31 +234,20 @@ export function CostComparisonResults({
           PDF extraction vs. embedding cost
         </CardTitle>
         <CardDescription className="max-w-3xl text-sm leading-relaxed text-slate-600">
-          Business question: for this document, how much of the pipeline cost is
-          Docling SaaS PDF → DocLang extraction, and how much is embedding the
-          text afterward? If extraction dominates, keeping DocLang as a durable
-          asset means later reingestions can skip the expensive step.
+          For static PDF archives, layout extraction is usually ~99% of the bill and
+          embedding is ~1%. If you change chunking or the embedding model later, a
+          normal pipeline re-parses the PDF and pays again. DocLang lets you parse
+          once, then re-chunk / re-embed cheaply.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-8">
-        {/* Pricing assumptions */}
-        <section className="rounded-xl border border-slate-200 bg-white/80 p-4 sm:p-5">
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-semibold text-slate-900">
-              Pricing assumptions
-            </h3>
-            <Badge className="border-slate-200 bg-slate-50 text-slate-700">
-              User-entered
-            </Badge>
-          </div>
-          <p className="mb-4 text-xs text-slate-500">
-            Rates below are assumptions used for estimates. They are labeled
-            verified only when a source and verification date are available
-            (none configured here).
-          </p>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <CardContent className="space-y-6">
+        <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+          <h3 className="text-sm font-semibold text-slate-900">
+            Pricing assumptions
+          </h3>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <div>
-              <Label>Extraction provider / plan</Label>
+              <Label>Primary extraction</Label>
               <Input
                 value={settings.cost.extraction_provider ?? "Docling SaaS"}
                 onChange={(e) =>
@@ -259,7 +256,7 @@ export function CostComparisonResults({
               />
             </div>
             <div>
-              <Label>Extraction price (USD / 1,000 pages)</Label>
+              <Label>Primary (USD / 1,000 pages)</Label>
               <Input
                 type="number"
                 step="0.01"
@@ -272,7 +269,7 @@ export function CostComparisonResults({
               />
             </div>
             <div>
-              <Label>Embedding provider / model</Label>
+              <Label>Embedding model</Label>
               <Input
                 placeholder="e.g. text-embedding-3-small"
                 value={settings.cost.paid_embedding_model}
@@ -282,7 +279,7 @@ export function CostComparisonResults({
               />
             </div>
             <div>
-              <Label>Embedding price (USD / 1M tokens)</Label>
+              <Label>Embedding (USD / 1M tokens)</Label>
               <Input
                 type="number"
                 step="0.0001"
@@ -300,383 +297,244 @@ export function CostComparisonResults({
               />
             </div>
           </div>
+
+          <h4 className="mt-5 text-sm font-semibold text-slate-900">
+            Compare vendors (USD / 1,000 pages)
+          </h4>
+          <div className="mt-2 space-y-2">
+            {compareVendors.map((vendor, index) => (
+              <div
+                key={index}
+                className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_7.5rem]"
+              >
+                <Input
+                  value={vendor.provider}
+                  onChange={(e) =>
+                    updateCompareVendor(index, { provider: e.target.value })
+                  }
+                />
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={vendor.price_per_1000_pages}
+                  onChange={(e) =>
+                    updateCompareVendor(index, {
+                      price_per_1000_pages: Number(e.target.value),
+                    })
+                  }
+                />
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] text-slate-500">
+            Defaults: Unstructured $15 ·{" "}
+            <a
+              href="https://azure.microsoft.com/en-us/pricing/details/document-intelligence/"
+              target="_blank"
+              rel="noreferrer"
+              className="underline"
+            >
+              Azure Layout
+            </a>{" "}
+            $10 · Snowflake Layout (global) $7.32. Rates are editable assumptions.
+          </p>
         </section>
 
         {!result ? (
           <p className="text-sm text-slate-500">
-            Empty until a process job finishes. Select a document and run a
-            cost estimate to populate this comparison.
+            Run a cost estimate to populate this comparison.
           </p>
         ) : (
           <>
-            {/* Data-source callout */}
-            <section className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 sm:px-5">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                What each side of the comparison uses
+            <p className="text-xs text-slate-500">
+              {formatInt(pages)} pages ({pageSourceLabel}) ·{" "}
+              {formatInt(paidTokens)} embedding tokens ({method.label})
+              {tokensPerPage != null
+                ? ` · ${formatInt(Math.round(tokensPerPage))} tokens / page`
+                : ""}{" "}
+              · {formatInt(chunkCount)} chunks · {formatSeconds(prepSeconds)}{" "}
+              local prep
+              {embedSkipped ? " · embedding skipped" : ""}
+            </p>
+            {tokensPerPage != null ? (
+              <p className="text-[11px] leading-relaxed text-slate-400">
+                Tokens / page uses chunked embedding input (overlap and repeated
+                headings / table headers counted). Typical dense 10-K runs land
+                around 800–1,400 with the default chunk settings.
               </p>
-              <div className="mt-2 grid gap-3 text-sm text-slate-700 sm:grid-cols-2">
-                <p>
-                  <span className="font-semibold text-teal-800">Pages → extraction $:</span>{" "}
-                  counted from the{" "}
-                  <span className="font-medium">
-                    {pageFromPdf ? "original PDF" : "page source"}
-                  </span>{" "}
-                  ({pageSourceLabel}). Used only for the Docling SaaS page-based
-                  price — PDF is not re-extracted here.
-                </p>
-                <p>
-                  <span className="font-semibold text-sky-800">Tokens → embedding $:</span>{" "}
-                  prepared from the existing{" "}
-                  <span className="font-medium">DocLang</span> artifact
-                  (load → chunk → tokenize). That is the text used for the
-                  embedding cost estimate.
-                </p>
-              </div>
-            </section>
+            ) : null}
 
-            {/* Primary cost cards */}
-            <section className="grid gap-4 lg:grid-cols-3">
-              <CostHeroCard
-                title="Extraction: PDF → DocLang"
-                amount={formatUsd(extractionCost, 2)}
-                basis={`${extractionProvider} · ${formatInt(pages)} pages × $${extractionRate.toFixed(2)} / 1,000 pages`}
-                footnote={`Page count source: ${pageSourceLabel}.`}
-                accent="teal"
-              />
-              <CostHeroCard
-                title="Embedding: DocLang text → vectors"
-                amount={
-                  embeddingCost == null
-                    ? "Unavailable"
-                    : formatUsd(embeddingCost, 4)
-                }
-                basis={
-                  embeddingCost == null
-                    ? paidTokens == null
-                      ? "Needs a completed run with token counts"
-                      : embeddingRate == null || Number.isNaN(Number(embeddingRate))
-                        ? "Set embedding price / 1M tokens above"
-                        : "Unable to compute with current inputs"
-                    : `${embeddingModel} · ${formatInt(paidTokens)} tokens × $${Number(embeddingRate).toFixed(4)} / 1M tokens`
-                }
-                footnote="Tokens come from chunking the prepared DocLang file — not from parsing the PDF again."
-                accent="sky"
-              />
-              <CostHeroCard
-                title="Total: extraction + embedding"
-                amount={
-                  totalCost == null ? "Unavailable" : formatUsd(totalCost, 4)
-                }
-                basis={
-                  totalCost == null
-                    ? "Requires both extraction and embedding estimates"
-                    : "Modeled cost to process this document from its original PDF"
-                }
-                footnote="Combines PDF-based page pricing with DocLang-based token pricing."
-                accent="slate"
-              />
-            </section>
-
-            {/* Comparison sentence + business context */}
-            <section className="space-y-4">
-              <div className="rounded-xl border border-teal-200 bg-teal-50/60 px-5 py-4">
-                <p className="text-base font-medium leading-relaxed text-teal-950">
-                  {comparisonSentence}
-                </p>
-              </div>
-
-              {businessTakeaway ? (
-                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Why DocLang helps for this document
-                  </p>
-                  <p className="mt-2 text-base font-medium leading-relaxed text-slate-900">
-                    Almost all of the modeled cost ({businessTakeaway.extractionShare})
-                    is the one-time PDF → DocLang extraction (
-                    {businessTakeaway.extractionUsd}). Embedding the prepared text
-                    is only about {businessTakeaway.embeddingUsd} — roughly{" "}
-                    {businessTakeaway.ratioLabel} cheaper.
-                  </p>
-
-                  <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50/80 p-4">
-                    <p className="text-sm font-semibold text-slate-900">
-                      Why reingest the same DocLang again?
-                    </p>
-                    <p className="mt-1 text-sm leading-relaxed text-slate-600">
-                      The PDF content did not change. Downstream choices often do —
-                      and each change needs a new pass over the text, not a new PDF
-                      extraction.
-                    </p>
-                    <ul className="mt-3 space-y-2 text-sm leading-relaxed text-slate-700">
-                      <li>
-                        <span className="font-medium text-slate-900">Different embedding model</span>
-                        {" — "}
-                        switch from a cheap OpenAI model to another provider, a
-                        newer model, or a local model (for example Qwen) without
-                        re-running Docling SaaS.
-                      </li>
-                      <li>
-                        <span className="font-medium text-slate-900">Different chunking</span>
-                        {" — "}
-                        try a new chunk size, overlap, or table handling to improve
-                        retrieval quality.
-                      </li>
-                      <li>
-                        <span className="font-medium text-slate-900">Rebuild or retarget the index</span>
-                        {" — "}
-                        recreate vectors after a schema change, a bad index, or for
-                        a second search / RAG store.
-                      </li>
-                      <li>
-                        <span className="font-medium text-slate-900">Development and iteration</span>
-                        {" — "}
-                        while you build the app you often re-run the same documents
-                        dozens of times (new chunk settings, model, prompt, or index
-                        wiring). That is day-to-day engineering, not a formal A/B
-                        test — but each run still needs tokens and embeddings, not a
-                        fresh PDF extraction.
-                      </li>
-                      <li>
-                        <span className="font-medium text-slate-900">A/B or evaluation runs</span>
-                        {" — "}
-                        a planned comparison of two (or more) embedding / chunking
-                        setups on a fixed document set, to pick a winner for
-                        production.
-                      </li>
-                    </ul>
-                  </div>
-
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-lg border border-rose-100 bg-rose-50/70 p-4">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-rose-800">
-                        Without reusable DocLang
-                      </p>
-                      <p className="mt-2 text-sm leading-relaxed text-rose-950">
-                        Each of those reingestions starts from the PDF again. You
-                        pay extraction ({businessTakeaway.extractionUsd}) plus
-                        embedding every time.
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-emerald-100 bg-emerald-50/70 p-4">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800">
-                        With DocLang kept on hand
-                      </p>
-                      <p className="mt-2 text-sm leading-relaxed text-emerald-950">
-                        Extraction is already done. Load the same DocLang, re-chunk,
-                        re-embed — about {businessTakeaway.embeddingUsd} instead of{" "}
-                        {businessTakeaway.extractionUsd}. Estimated extraction
-                        avoided per reingestion:{" "}
-                        <span className="font-semibold tabular-nums">
-                          {businessTakeaway.savingsUsd}
-                        </span>
-                        .
-                      </p>
-                    </div>
-                  </div>
-                  <p className="mt-4 text-sm leading-relaxed text-slate-600">
-                    DocLang is the durable intermediate format: structure and text
-                    stay available without calling Docling SaaS again. That is why
-                    preparing once and reusing matters when extraction is{" "}
-                    {businessTakeaway.ratioLabel} the embedding cost.
-                  </p>
-                </div>
-              ) : null}
-            </section>
-
-            {/* Transparent calculations */}
+            {/* Cost breakdown graph */}
             <section className="rounded-xl border border-slate-200 p-4 sm:p-5">
-              <h3 className="text-sm font-semibold text-slate-900">
-                How these estimates are calculated
-              </h3>
-              <ul className="mt-3 space-y-2 text-sm text-slate-700">
-                <li>
-                  <span className="font-medium">Extraction cost</span> ={" "}
-                  {formatInt(pages)} pages (from {pageSourceLabel}) ÷ 1,000 × $
-                  {extractionRate.toFixed(2)} ={" "}
-                  <span className="tabular-nums font-semibold">
-                    {formatUsd(extractionCost, 4)}
-                  </span>
-                </li>
-                <li>
-                  <span className="font-medium">Embedding cost</span> ={" "}
-                  {paidTokens == null ? "—" : formatInt(paidTokens)} tokens
-                  (from DocLang chunks) ÷ 1,000,000 ×{" "}
-                  {embeddingRate == null
-                    ? "(rate unavailable)"
-                    : `$${Number(embeddingRate).toFixed(4)}`}{" "}
-                  ={" "}
-                  <span className="tabular-nums font-semibold">
-                    {embeddingCost == null
-                      ? "Unavailable"
-                      : formatUsd(embeddingCost, 4)}
-                  </span>
-                </li>
-                <li>
-                  <span className="font-medium">Total cost</span> = extraction +
-                  embedding ={" "}
-                  <span className="tabular-nums font-semibold">
-                    {totalCost == null
-                      ? "Unavailable"
-                      : formatUsd(totalCost, 4)}
-                  </span>
-                </li>
-              </ul>
-              <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-600">
-                <p className="font-medium text-slate-800">
-                  Embedding token count used for the estimate
-                </p>
-                <p className="mt-1">
-                  <strong>Paid-model tokens (drives the estimate):</strong>{" "}
-                  {paidTokens == null ? "—" : formatInt(paidTokens)} via{" "}
-                  {method.label}
-                  {method.exact
-                    ? " — exact for this encoding (not a live provider bill)."
-                    : " — approximate proxy; not a verified provider tokenizer."}
-                </p>
-                <p className="mt-1">
-                  <strong>Measured local tokens (reference):</strong>{" "}
-                  {formatInt(localTokens)} with the Qwen embedding tokenizer
-                  (exact for local encoding; kept separate from the paid
-                  estimate).
-                </p>
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Cost breakdown by extraction vendor
+                </h3>
+                <Badge className="border-amber-200 bg-amber-50 text-amber-900">
+                  Estimated
+                </Badge>
               </div>
-            </section>
+              <p className="mt-1 text-xs text-slate-500">
+                Same page count and DocLang embedding tokens; only the extraction
+                rate changes. Bars share one scale.
+              </p>
 
-            {/* Stacked breakdown */}
-            <section className="rounded-xl border border-slate-200 p-4 sm:p-5">
-              <h3 className="text-sm font-semibold text-slate-900">
-                Cost breakdown
-              </h3>
               {totalCost != null &&
               extractionCost != null &&
               embeddingCost != null ? (
-                <div className="mt-4 space-y-3">
-                  <div className="flex h-4 w-full overflow-hidden rounded-full bg-slate-100">
-                    <div
-                      className="h-full bg-teal-600"
-                      style={{ width: `${visualExtractionFinal}%` }}
-                      title={`Extraction ${formatUsd(extractionCost, 4)}`}
-                    />
-                    <div
-                      className="h-full bg-sky-500"
-                      style={{ width: `${visualEmbedding}%` }}
-                      title={`Embedding ${formatUsd(embeddingCost, 4)}`}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-2 text-sm sm:flex-row sm:justify-between">
-                    <p className="text-slate-700">
-                      <span className="mr-2 inline-block h-2.5 w-2.5 rounded-sm bg-teal-600" />
-                      Extraction{" "}
-                      <span className="font-semibold tabular-nums">
-                        {formatUsd(extractionCost, 4)}
-                      </span>{" "}
-                      ({formatPct(extractionPctOfTotal)})
-                    </p>
-                    <p className="text-slate-700">
-                      <span className="mr-2 inline-block h-2.5 w-2.5 rounded-sm bg-sky-500" />
-                      Embedding{" "}
-                      <span className="font-semibold tabular-nums">
-                        {formatUsd(embeddingCost, 4)}
-                      </span>{" "}
-                      ({formatPct(embeddingPctOfTotal, 2)})
-                    </p>
-                  </div>
-                  {embeddingPctOfTotal != null && embeddingPctOfTotal < 2 ? (
-                    <p className="text-[11px] text-slate-500">
-                      Embedding share is visually enlarged slightly in the bar
-                      so the small segment stays readable; percentages above are
-                      exact.
-                    </p>
-                  ) : null}
+                <div className="mt-5 space-y-6">
+                  <VendorBreakdownRow
+                    label={extractionProvider}
+                    total={totalCost}
+                    extractionCost={extractionCost}
+                    embeddingCost={embeddingCost}
+                    extractionColor="bg-teal-600"
+                    maxTotal={maxVendorTotal}
+                    enlargeEmbedding={
+                      embeddingPctOfTotal != null && embeddingPctOfTotal < 2
+                    }
+                  />
+                  {compareRows.map((row) =>
+                    row.extractionCost != null && row.totalCost != null ? (
+                      <VendorBreakdownRow
+                        key={row.index}
+                        label={row.provider}
+                        total={row.totalCost}
+                        extractionCost={row.extractionCost}
+                        embeddingCost={embeddingCost}
+                        extractionColor={row.barColor}
+                        maxTotal={maxVendorTotal}
+                        enlargeEmbedding
+                      />
+                    ) : null
+                  )}
                 </div>
               ) : (
                 <p className="mt-3 text-sm text-slate-500">
-                  Breakdown available once both extraction and embedding
-                  estimates can be computed.
+                  Enter an embedding price to show the breakdown.
                 </p>
               )}
             </section>
 
-            {/* Secondary measurements */}
-            <section className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 sm:p-5">
-              <h3 className="text-sm font-semibold text-slate-900">
-                Supporting measurements from this run
-              </h3>
-              <p className="mt-1 text-xs text-slate-500">
-                Measured locally. Separate from SaaS extraction timing or paid
-                embedding API calls.
-              </p>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <p className="text-[11px] uppercase tracking-wide text-slate-500">
-                    Pages
-                  </p>
-                  <p className="mt-1 text-xl font-semibold tabular-nums">
-                    {formatInt(pages)}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <p className="text-[11px] uppercase tracking-wide text-slate-500">
-                    Chunks
-                  </p>
-                  <p className="mt-1 text-xl font-semibold tabular-nums">
-                    {formatInt(chunkCount)}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <p className="text-[11px] uppercase tracking-wide text-slate-500">
-                    Local tokens (Qwen)
-                  </p>
-                  <p className="mt-1 text-xl font-semibold tabular-nums">
-                    {formatInt(localTokens)}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-white p-3">
-                  <p className="text-[11px] uppercase tracking-wide text-slate-500">
-                    Local preparation time
-                  </p>
-                  <p className="mt-1 text-xl font-semibold tabular-nums">
-                    {formatSeconds(prepSeconds)}
-                  </p>
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    Load + chunk + tokenize
-                    {embedSkipped ? ". Embedding was skipped." : "."}
-                  </p>
-                </div>
-              </div>
-            </section>
+            {businessTakeaway ? (
+              <section className="rounded-xl border border-slate-200 bg-white p-5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Why DocLang helps
+                </p>
+                <p className="mt-2 text-sm leading-relaxed text-slate-800">
+                  About {businessTakeaway.extractionShare} of this estimate (
+                  {businessTakeaway.extractionUsd}) is PDF → DocLang extraction.
+                  Embedding is only {businessTakeaway.embeddingUsd} — roughly{" "}
+                  {businessTakeaway.ratioLabel} smaller. If the PDF never changes,
+                  keep DocLang and pay the small amount again when you reingest —
+                  not the full extraction bill.
+                  {businessTakeaway.prepLabel !== "—" ? (
+                    <>
+                      {" "}
+                      You also save time: this run’s local DocLang prep finished in{" "}
+                      {businessTakeaway.prepLabel}
+                      {businessTakeaway.stageSavingsLabel &&
+                      businessTakeaway.baselineLabel ? (
+                        <>
+                          {" "}
+                          (about {businessTakeaway.stageSavingsLabel} faster than
+                          your {businessTakeaway.baselineLabel} extraction
+                          baseline)
+                        </>
+                      ) : (
+                        <>
+                          {" "}
+                          — later reingestions skip the cloud parse wait and stay
+                          on local load → chunk → tokenize
+                        </>
+                      )}
+                      .
+                    </>
+                  ) : null}
+                </p>
 
-            {/* Assumptions note */}
-            <p className="text-xs leading-relaxed text-slate-500">
-              Provider charges are estimated from document size and the selected
-              rates. This run measured local preparation only. Storage, network,
-              and local compute costs are excluded. The business takeaway above
-              assumes DocLang can be stored and reused; it does not include
-              storage fees.
+                <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50/80 p-4">
+                  <p className="text-sm font-semibold text-slate-900">
+                    When do you reingest the same DocLang again?
+                  </p>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                    The PDF did not change. Your pipeline choices often do — and each
+                    change needs a new pass over the text, not a new PDF extraction.
+                  </p>
+                  <ul className="mt-3 space-y-2 text-sm leading-relaxed text-slate-700">
+                    <li>
+                      <span className="font-medium text-slate-900">
+                        Different embedding model
+                      </span>
+                      {" — "}
+                      switch provider, upgrade the model, or try a local model (for
+                      example Qwen) without calling Docling SaaS again.
+                    </li>
+                    <li>
+                      <span className="font-medium text-slate-900">
+                        Different chunking
+                      </span>
+                      {" — "}
+                      change chunk size, overlap, or table packing to improve
+                      retrieval.
+                    </li>
+                    <li>
+                      <span className="font-medium text-slate-900">
+                        Rebuild or retarget the index
+                      </span>
+                      {" — "}
+                      recreate vectors after a schema change, a bad index, or for a
+                      second search / RAG store (including OpenSearch).
+                    </li>
+                    <li>
+                      <span className="font-medium text-slate-900">
+                        Development and iteration
+                      </span>
+                      {" — "}
+                      while you build, you often re-run the same documents many times
+                      (new settings, model, prompts, wiring). Each run still needs
+                      tokens and embeddings — not a fresh PDF parse.
+                    </li>
+                    <li>
+                      <span className="font-medium text-slate-900">
+                        A/B or evaluation runs
+                      </span>
+                      {" — "}
+                      compare two or more embedding / chunking setups on a fixed
+                      document set and pick a winner for production.
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-lg border border-rose-100 bg-rose-50/60 p-3">
+                    <p className="text-xs font-semibold text-rose-800">
+                      Without reusable DocLang
+                    </p>
+                    <p className="mt-1 text-sm text-rose-950">
+                      Each of those reingestions starts from the PDF again. You pay
+                      extraction ({businessTakeaway.extractionUsd}) plus embedding
+                      every time.
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
+                    <p className="text-xs font-semibold text-emerald-800">
+                      With DocLang kept on hand
+                    </p>
+                    <p className="mt-1 text-sm text-emerald-950">
+                      Load the same file, re-chunk, re-embed — about{" "}
+                      {businessTakeaway.embeddingUsd} instead of{" "}
+                      {businessTakeaway.extractionUsd}.
+                    </p>
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
+            <p className="text-xs text-slate-500">
+              Estimates only — no SaaS extraction or paid embedding calls are
+              made. Storage and network costs are excluded.
             </p>
-
-            <details className="text-xs text-slate-600">
-              <summary className="cursor-pointer font-medium text-slate-700">
-                Technical details and exclusions
-              </summary>
-              <ul className="mt-2 list-disc space-y-1 pl-5">
-                <li>
-                  Fresh PDF extraction is not executed by this application;
-                  extraction $ uses page count and your SaaS rate assumption.
-                </li>
-                <li>
-                  Paid embedding API calls are not executed; embedding $ uses
-                  counted input tokens and your selected rate.
-                </li>
-                <li>
-                  Local Qwen token counts and paid-model token estimates are
-                  kept distinct.
-                </li>
-                {(result.cost?.notes || []).map((n) => (
-                  <li key={n}>{n}</li>
-                ))}
-              </ul>
-            </details>
 
             <div className="flex flex-wrap gap-2">
               <a
@@ -696,5 +554,75 @@ export function CostComparisonResults({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function VendorBreakdownRow({
+  label,
+  total,
+  extractionCost,
+  embeddingCost,
+  extractionColor,
+  maxTotal,
+  enlargeEmbedding,
+}: {
+  label: string;
+  total: number;
+  extractionCost: number;
+  embeddingCost: number;
+  extractionColor: string;
+  maxTotal: number;
+  enlargeEmbedding?: boolean;
+}) {
+  const extractionPct = total > 0 ? (extractionCost / total) * 100 : 0;
+  const embeddingPct = total > 0 ? (embeddingCost / total) * 100 : 0;
+  const extractionWidth = maxTotal > 0 ? (extractionCost / maxTotal) * 100 : 0;
+  const embeddingWidth =
+    maxTotal > 0
+      ? Math.max(
+          (embeddingCost / maxTotal) * 100,
+          enlargeEmbedding && embeddingPct < 2 ? 1.5 : 0
+        )
+      : 0;
+
+  return (
+    <div>
+      <div className="mb-1.5 flex items-baseline justify-between gap-3">
+        <p className="text-sm font-medium text-slate-800">{label}</p>
+        <p className="shrink-0 tabular-nums text-sm font-semibold text-slate-900">
+          {formatUsd(total, 4)}
+        </p>
+      </div>
+      <div className="flex h-3.5 w-full overflow-hidden rounded-full bg-slate-100">
+        <div
+          className={`h-full ${extractionColor}`}
+          style={{ width: `${extractionWidth}%` }}
+          title={`${label} ${formatUsd(extractionCost, 4)}`}
+        />
+        <div
+          className="h-full bg-sky-500"
+          style={{ width: `${embeddingWidth}%` }}
+          title={`Embedding ${formatUsd(embeddingCost, 4)}`}
+        />
+      </div>
+      <div className="mt-2 space-y-0.5 text-xs tabular-nums text-slate-600">
+        <p>
+          <span className={`mr-1.5 inline-block h-2 w-2 rounded-sm ${extractionColor}`} />
+          {label}{" "}
+          <span className="font-medium text-slate-800">
+            {formatUsd(extractionCost, 4)}
+          </span>{" "}
+          ({formatPct(extractionPct)})
+        </p>
+        <p>
+          <span className="mr-1.5 inline-block h-2 w-2 rounded-sm bg-sky-500" />
+          Embedding{" "}
+          <span className="font-medium text-slate-800">
+            {formatUsd(embeddingCost, 4)}
+          </span>{" "}
+          ({formatPct(embeddingPct, 2)})
+        </p>
+      </div>
+    </div>
   );
 }

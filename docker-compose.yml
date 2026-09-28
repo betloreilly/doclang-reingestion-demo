@@ -1,0 +1,59 @@
+# Local OpenSearch for FinanceBench retrieval-quality comparison.
+# Requires Rancher Desktop (or Docker Desktop) running.
+#
+# Set a strong admin password in the environment (or a gitignored root .env), then:
+#   export OPENSEARCH_INITIAL_ADMIN_PASSWORD='…'   # choose your own; do not commit it
+#   docker compose up -d
+#   curl -k -u admin:"$OPENSEARCH_INITIAL_ADMIN_PASSWORD" https://localhost:9200
+#
+# Put the same value in backend/.env as OPENSEARCH_PASSWORD.
+# Dashboards: http://localhost:5601
+# Reset data: docker compose down -v
+
+services:
+  opensearch:
+    image: opensearchproject/opensearch:3.5.0
+    container_name: doclang-recall-opensearch
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:?Set OPENSEARCH_INITIAL_ADMIN_PASSWORD before compose up}
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - doclang-recall-os-data:/usr/share/opensearch/data
+    networks:
+      - doclang-recall-net
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sk -u admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD https://localhost:9200 >/dev/null || exit 1",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:3.5.0
+    container_name: doclang-recall-dashboards
+    ports:
+      - "5601:5601"
+    environment:
+      OPENSEARCH_HOSTS: '["https://opensearch:9200"]'
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:?Set OPENSEARCH_INITIAL_ADMIN_PASSWORD before compose up}
+      OPENSEARCH_SSL_VERIFICATIONMODE: none
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    networks:
+      - doclang-recall-net
+
+volumes:
+  doclang-recall-os-data:
+
+networks:
+  doclang-recall-net:
