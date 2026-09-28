@@ -406,6 +406,14 @@ Full run (150 questions, OpenSearch):
 | One filing | DocLang | 35.3% | 76.0% | 87.3% |
 | | Unstructured | 34.0% | 72.7% | 86.0% |
 
+Example UI — **one filing at a time**, Top 5 (DocLang 76.0% vs Unstructured 72.7%):
+
+![Retrieval quality UI: one filing, Top 5](docs/retrievalquality1.png)
+
+Same run with **Top 10** (DocLang 87.3% vs Unstructured 86.0%). The explorer below shows questions only DocLang found:
+
+![Retrieval quality UI: one filing, Top 10](docs/retrievalquality2.png)
+
 Top 1 is low for both: vector search often puts a related page first (for `03029`, page 47 before page 60). Keyword search or a reranker would help Top 1; this demo uses vector search only.
 
 ~50% for “all filings” is normal when you only use vector search (no keyword search, no reranker) over 84 long filings.  
