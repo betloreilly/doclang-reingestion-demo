@@ -61,9 +61,10 @@ def local_topk(query: np.ndarray, vectors: np.ndarray, k: int = TOP_K) -> Tuple[
 
 
 def score_ranking(ranked_chunks: Sequence[PageRef], evidence: Set[PageRef]) -> Dict[str, object]:
-    """First relevant page rank plus the share of evidence pages found within each cutoff.
+    """Page-level Hit/Recall helpers after collapsing chunks to distinct pages.
 
-    Ranks count distinct pages, not chunks.
+    Hit@k (via first_rank): at least one evidence page appears in the top k pages.
+    Recall@k: |evidence ∩ top-k pages| / |evidence| for that question.
     """
     ranked_pages = unique_pages(ranked_chunks)[:TOP_K]
     first_rank: Optional[int] = None
@@ -71,11 +72,20 @@ def score_ranking(ranked_chunks: Sequence[PageRef], evidence: Set[PageRef]) -> D
         if ref in evidence:
             first_rank = rank
             break
-    recall_at = {}
+    recall_at: Dict[int, float] = {}
     for k in KS:
         found = evidence & set(ranked_pages[:k])
-        recall_at[k] = len(found) / len(evidence) if evidence else 0.0
+        recall_at[k] = (len(found) / len(evidence)) if evidence else 0.0
     return {"first_rank": first_rank, "recall_at": recall_at}
+
+
+def _recall_value(row: Dict[str, object], k: int) -> float:
+    """Read recall@k whether keys were stored as int (in-memory) or str (JSON)."""
+    raw = row.get("recall_at") or {}
+    if not isinstance(raw, dict):
+        return 0.0
+    value = raw.get(k, raw.get(str(k), 0.0))
+    return float(value or 0.0)
 
 
 def summarize(rows: List[Dict[str, object]]) -> Dict[str, object]:
@@ -89,7 +99,8 @@ def summarize(rows: List[Dict[str, object]]) -> Dict[str, object]:
             str(k): sum(1 for r in items if r["first_rank"] and r["first_rank"] <= k) / n
             for k in KS
         }
-        recall_at = {str(k): sum(r["recall_at"][k] for r in items) / n for k in KS}
+        # Macro-average of per-question Recall@k (handles multi-page evidence).
+        recall_at = {str(k): sum(_recall_value(r, k) for r in items) / n for k in KS}
         mrr = sum(1.0 / r["first_rank"] for r in items if r["first_rank"]) / n
         return {"n": n, "hit_at": hit_at, "recall_at": recall_at, "mrr": mrr}
 

@@ -26,8 +26,8 @@ def main() -> int:
         g = p["retrieval"]["global"]["overall"]
         d = p["retrieval"]["per_document"]["overall"]
         print(
-            f"{p['label']:<28} global hit@5 {g['hit_at']['5']:.1%} @10 {g['hit_at']['10']:.1%}  "
-            f"per-doc hit@5 {d['hit_at']['5']:.1%}  index={p.get('index')}"
+            f"{p['label']:<28} global hit@5 {g['hit_at']['5']:.1%} recall@5 {g['recall_at']['5']:.1%}  "
+            f"per-doc hit@5 {d['hit_at']['5']:.1%} recall@5 {d['recall_at']['5']:.1%}  index={p.get('index')}"
         )
     if args.save:
         run_id = str(uuid.uuid4())

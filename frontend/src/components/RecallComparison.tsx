@@ -268,11 +268,16 @@ export function RecallComparison({
 
   const dHit = retrieval("doclang")?.overall.hit_at[String(k)];
   const uHit = retrieval("unstructured")?.overall.hit_at[String(k)];
+  const dRecall = retrieval("doclang")?.overall.recall_at?.[String(k)];
+  const uRecall = retrieval("unstructured")?.overall.recall_at?.[String(k)];
   const setupStep = osReady ? 3 : embeddingsReady ? 2 : 1;
   const busy = running || ingesting || osBusy;
   const nQuestions = retrieval("doclang")?.overall.n ?? run?.dataset.questions_evaluated;
-  const doclangAhead =
+  const doclangAheadHit =
     dHit !== undefined && uHit !== undefined ? dHit >= uHit : null;
+  const doclangAheadRecall =
+    dRecall !== undefined && uRecall !== undefined ? dRecall >= uRecall : null;
+  const ksList = run?.settings.ks?.length ? run.settings.ks : [1, 3, 5, 10];
 
   return (
     <div id="recall-comparison" className="space-y-6">
@@ -303,8 +308,9 @@ export function RecallComparison({
               <span className="font-medium text-slate-900">60</span> of{" "}
               <span className="font-mono text-xs">3M_2018_10K</span>. If page 60
               shows up in the top {k} search hits → that pipeline{" "}
-              <span className="font-medium text-teal-800">found it</span>. If not
-              → it <span className="font-medium text-rose-700">missed</span>.
+              <span className="font-medium text-teal-800">found it</span> (Hit).
+              If a question labels several pages, Recall also asks how many of
+              those pages land in the top {k}.
             </p>
           </div>
 
@@ -591,9 +597,25 @@ export function RecallComparison({
                   You are measuring now:{" "}
                 </span>
                 {scope === "global"
-                  ? `among all 84 filings, how often is the evidence page in the top ${k} hits?`
-                  : `inside the known filing only, how often is the evidence page in the top ${k} hits?`}{" "}
+                  ? `among all 84 filings, Hit@${k} (any evidence page in top ${k}) and Recall@${k} (share of all evidence pages in top ${k}).`
+                  : `inside the known filing only, Hit@${k} (any evidence page in top ${k}) and Recall@${k} (share of all evidence pages in top ${k}).`}{" "}
                 Compare DocLang vs Unstructured on this same setting.
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-relaxed text-slate-600">
+                  <p className="font-semibold text-slate-800">Hit@{k}</p>
+                  <p className="mt-0.5">
+                    Share of questions where <em>at least one</em> labeled
+                    evidence page appears in the top {k} pages.
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-relaxed text-slate-600">
+                  <p className="font-semibold text-slate-800">Recall@{k}</p>
+                  <p className="mt-0.5">
+                    Per question: labeled pages found ÷ labeled pages, then
+                    average. Stricter when answers span several pages.
+                  </p>
+                </div>
               </div>
             </div>
           </CardHeader>
@@ -605,11 +627,27 @@ export function RecallComparison({
                   <p className={`text-sm font-semibold ${TONES[p].text}`}>
                     {TONES[p].name}
                   </p>
-                  <p className="mt-2 font-display text-4xl font-semibold tabular-nums text-slate-900">
-                    {pct(retrieval(p)?.overall.hit_at[String(k)])}
-                  </p>
-                  <p className="mt-2 text-xs leading-relaxed text-slate-600">
-                    found the evidence page in the top {k}
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                        Hit@{k}
+                      </p>
+                      <p className="mt-1 font-display text-3xl font-semibold tabular-nums text-slate-900">
+                        {pct(retrieval(p)?.overall.hit_at[String(k)])}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                        Recall@{k}
+                      </p>
+                      <p className="mt-1 font-display text-3xl font-semibold tabular-nums text-slate-900">
+                        {pct(retrieval(p)?.overall.recall_at?.[String(k)])}
+                      </p>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs leading-relaxed text-slate-600">
+                    Top {k} ·{" "}
+                    {scope === "global" ? "all filings" : "one filing"}
                   </p>
                 </div>
               ))}
@@ -617,17 +655,34 @@ export function RecallComparison({
                 <p className="text-sm font-semibold text-slate-800">
                   Gap (DocLang − Unstructured)
                 </p>
-                <p
-                  className={`mt-2 font-display text-4xl font-semibold tabular-nums ${
-                    doclangAhead ? "text-teal-800" : "text-rose-700"
-                  }`}
-                >
-                  {deltaPp(dHit, uHit)}
-                </p>
-                <p className="mt-2 text-xs leading-relaxed text-slate-600">
-                  {doclangAhead
-                    ? "DocLang finds the right page more often on this setup."
-                    : "Unstructured finds the right page more often on this setup."}
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <div>
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                      Hit@{k}
+                    </p>
+                    <p
+                      className={`mt-1 font-display text-2xl font-semibold tabular-nums ${
+                        doclangAheadHit ? "text-teal-800" : "text-rose-700"
+                      }`}
+                    >
+                      {deltaPp(dHit, uHit)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                      Recall@{k}
+                    </p>
+                    <p
+                      className={`mt-1 font-display text-2xl font-semibold tabular-nums ${
+                        doclangAheadRecall ? "text-teal-800" : "text-rose-700"
+                      }`}
+                    >
+                      {deltaPp(dRecall, uRecall)}
+                    </p>
+                  </div>
+                </div>
+                <p className="mt-3 text-xs leading-relaxed text-slate-600">
+                  Positive means DocLang is ahead on that metric.
                 </p>
               </div>
             </div>
@@ -635,22 +690,22 @@ export function RecallComparison({
             {winCounts ? (
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 <CountChip
-                  label="Both found it"
+                  label="Both found it (Hit)"
                   value={winCounts.both}
                   tone="neutral"
                 />
                 <CountChip
-                  label="Only DocLang"
+                  label="Only DocLang (Hit)"
                   value={winCounts.doclangOnly}
                   tone="teal"
                 />
                 <CountChip
-                  label="Only Unstructured"
+                  label="Only Unstructured (Hit)"
                   value={winCounts.unstructuredOnly}
                   tone="amber"
                 />
                 <CountChip
-                  label="Both missed"
+                  label="Both missed (Hit)"
                   value={winCounts.bothMissed}
                   tone="rose"
                 />
@@ -660,76 +715,67 @@ export function RecallComparison({
             <div className="grid gap-8 lg:grid-cols-2">
               <div>
                 <p className="mb-1 text-sm font-semibold text-slate-900">
-                  As we look at more hits
+                  Hit@k as we look at more hits
                 </p>
                 <p className="mb-3 text-xs text-slate-500">
                   Teal = DocLang · Amber = Unstructured. Higher is better.
                 </p>
-                <div className="space-y-3">
-                  {(run.settings.ks?.length
-                    ? run.settings.ks
-                    : [1, 3, 5, 10]
-                  ).map((kk) => (
-                    <div key={kk}>
-                      <p className="text-xs text-slate-500">Top {kk}</p>
-                      {PIPELINES.map((p) => {
-                        const v =
-                          retrieval(p)?.overall.hit_at[String(kk)] ?? 0;
-                        return (
-                          <div key={p} className="mt-1 flex items-center gap-2">
-                            <div className="h-2.5 flex-1 rounded bg-slate-100">
-                              <div
-                                className={`h-2.5 rounded ${TONES[p].bar}`}
-                                style={{ width: `${v * 100}%` }}
-                              />
-                            </div>
-                            <span
-                              className={`w-14 text-right text-xs tabular-nums ${TONES[p].text}`}
-                            >
-                              {pct(v)}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ))}
-                </div>
+                <MetricBars
+                  ks={ksList}
+                  pipelines={PIPELINES}
+                  getValue={(p, kk) =>
+                    retrieval(p)?.overall.hit_at[String(kk)] ?? 0
+                  }
+                />
               </div>
               <div>
                 <p className="mb-1 text-sm font-semibold text-slate-900">
-                  By question type (top {k})
+                  Recall@k as we look at more hits
+                </p>
+                <p className="mb-3 text-xs text-slate-500">
+                  Same cutoffs; drops below Hit when multi-page evidence is only
+                  partly retrieved.
+                </p>
+                <MetricBars
+                  ks={ksList}
+                  pipelines={PIPELINES}
+                  getValue={(p, kk) =>
+                    retrieval(p)?.overall.recall_at?.[String(kk)] ?? 0
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-8 lg:grid-cols-2">
+              <div>
+                <p className="mb-1 text-sm font-semibold text-slate-900">
+                  Hit@{k} by question type
                 </p>
                 <p className="mb-3 text-xs text-slate-500">
                   About 50 questions in each FinanceBench type
                 </p>
-                <div className="space-y-3">
-                  {Object.keys(retrieval("doclang")?.by_type ?? {}).map((t) => (
-                    <div key={t}>
-                      <p className="text-xs text-slate-500">
-                        {TYPE_LABEL[t] ?? t}
-                      </p>
-                      {PIPELINES.map((p) => {
-                        const v =
-                          retrieval(p)?.by_type[t]?.hit_at[String(k)] ?? 0;
-                        return (
-                          <div key={p} className="mt-1 flex items-center gap-2">
-                            <div className="h-2.5 flex-1 rounded bg-slate-100">
-                              <div
-                                className={`h-2.5 rounded ${TONES[p].bar}`}
-                                style={{ width: `${v * 100}%` }}
-                              />
-                            </div>
-                            <span
-                              className={`w-14 text-right text-xs tabular-nums ${TONES[p].text}`}
-                            >
-                              {pct(v)}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ))}
-                </div>
+                <TypeBars
+                  types={Object.keys(retrieval("doclang")?.by_type ?? {})}
+                  pipelines={PIPELINES}
+                  getValue={(p, t) =>
+                    retrieval(p)?.by_type[t]?.hit_at[String(k)] ?? 0
+                  }
+                />
+              </div>
+              <div>
+                <p className="mb-1 text-sm font-semibold text-slate-900">
+                  Recall@{k} by question type
+                </p>
+                <p className="mb-3 text-xs text-slate-500">
+                  Same types; useful when answers cite several pages
+                </p>
+                <TypeBars
+                  types={Object.keys(retrieval("doclang")?.by_type ?? {})}
+                  pipelines={PIPELINES}
+                  getValue={(p, t) =>
+                    retrieval(p)?.by_type[t]?.recall_at?.[String(k)] ?? 0
+                  }
+                />
               </div>
             </div>
 
@@ -739,8 +785,9 @@ export function RecallComparison({
                   Look at individual questions
                 </p>
                 <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                  Click a question to see the top pages each pipeline returned.
-                  Green highlight = evidence page.
+                  Filters use Hit@{k} (any evidence page in top {k}). Click a
+                  question to see the top pages each pipeline returned. Green
+                  highlight = evidence page.
                 </p>
               </div>
               <div className="space-y-3 px-4 py-3">
@@ -851,6 +898,82 @@ function ScopeChoice({
       <p className="mt-1 text-sm font-semibold text-slate-900">{title}</p>
       <p className="mt-1.5 text-xs leading-relaxed text-slate-600">{detail}</p>
     </button>
+  );
+}
+
+function MetricBars({
+  ks,
+  pipelines,
+  getValue,
+}: {
+  ks: number[];
+  pipelines: RecallPipelineKey[];
+  getValue: (p: RecallPipelineKey, k: number) => number;
+}) {
+  return (
+    <div className="space-y-3">
+      {ks.map((kk) => (
+        <div key={kk}>
+          <p className="text-xs text-slate-500">Top {kk}</p>
+          {pipelines.map((p) => {
+            const v = getValue(p, kk);
+            return (
+              <div key={p} className="mt-1 flex items-center gap-2">
+                <div className="h-2.5 flex-1 rounded bg-slate-100">
+                  <div
+                    className={`h-2.5 rounded ${TONES[p].bar}`}
+                    style={{ width: `${v * 100}%` }}
+                  />
+                </div>
+                <span
+                  className={`w-14 text-right text-xs tabular-nums ${TONES[p].text}`}
+                >
+                  {pct(v)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TypeBars({
+  types,
+  pipelines,
+  getValue,
+}: {
+  types: string[];
+  pipelines: RecallPipelineKey[];
+  getValue: (p: RecallPipelineKey, t: string) => number;
+}) {
+  return (
+    <div className="space-y-3">
+      {types.map((t) => (
+        <div key={t}>
+          <p className="text-xs text-slate-500">{TYPE_LABEL[t] ?? t}</p>
+          {pipelines.map((p) => {
+            const v = getValue(p, t);
+            return (
+              <div key={p} className="mt-1 flex items-center gap-2">
+                <div className="h-2.5 flex-1 rounded bg-slate-100">
+                  <div
+                    className={`h-2.5 rounded ${TONES[p].bar}`}
+                    style={{ width: `${v * 100}%` }}
+                  />
+                </div>
+                <span
+                  className={`w-14 text-right text-xs tabular-nums ${TONES[p].text}`}
+                >
+                  {pct(v)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
   );
 }
 

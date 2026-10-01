@@ -59,8 +59,14 @@ def main() -> int:
         if p["retrieval"]:
             g = p["retrieval"]["global"]["overall"]
             d = p["retrieval"]["per_document"]["overall"]
-            line += "  global hit@5 {:.1%} @10 {:.1%}  per-doc hit@5 {:.1%}".format(
-                g["hit_at"]["5"], g["hit_at"]["10"], d["hit_at"]["5"]
+            line += (
+                "  global hit@5 {:.1%} recall@5 {:.1%}  "
+                "per-doc hit@5 {:.1%} recall@5 {:.1%}"
+            ).format(
+                g["hit_at"]["5"],
+                g["recall_at"]["5"],
+                d["hit_at"]["5"],
+                d["recall_at"]["5"],
             )
         print(line)
     return 0

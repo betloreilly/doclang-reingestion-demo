@@ -89,8 +89,10 @@ def test_score_ranking_and_summary():
     )
     assert summary["overall"]["hit_at"]["1"] == 0.0
     assert summary["overall"]["hit_at"]["3"] == 0.5
+    assert summary["overall"]["recall_at"]["5"] == pytest.approx(0.5)  # (1.0 + 0) / 2
     assert summary["overall"]["mrr"] == pytest.approx(0.25)
     assert summary["by_type"]["a"]["hit_at"]["3"] == 1.0
+    assert summary["by_type"]["a"]["recall_at"]["5"] == 1.0
 
 
 def test_score_ranking_counts_distinct_pages():
@@ -100,6 +102,34 @@ def test_score_ranking_counts_distinct_pages():
     assert scored["first_rank"] == 3
     assert scored["recall_at"][1] == 0.0
     assert scored["recall_at"][3] == 1.0
+
+
+def test_multipage_hit_vs_recall_and_json_keys():
+    """Hit@k needs any evidence page; Recall@k needs the share of all of them."""
+    evidence = {("D", 48), ("D", 50), ("D", 52)}
+    # Distinct pages after dedupe: 1, 50, 2, 48, 3, 52
+    # top1 → none; top3 → {50} (1/3); top5 → {50,48} (2/3); top10 → all three
+    ranked = [("D", 1), ("D", 1), ("D", 50), ("D", 2), ("D", 48), ("D", 3), ("D", 52)]
+    scored = score_ranking(ranked, evidence)
+    assert scored["first_rank"] == 2  # page 50 → Hit@3/5/10 yes, Hit@1 no
+    assert scored["recall_at"][1] == 0.0
+    assert scored["recall_at"][3] == pytest.approx(1 / 3)
+    assert scored["recall_at"][5] == pytest.approx(2 / 3)
+    assert scored["recall_at"][10] == 1.0
+
+    # Macro-average + tolerate string keys after JSON round-trip
+    import json
+
+    row_a = {**scored, "question_type": "metrics-generated"}
+    row_b = {
+        "first_rank": None,
+        "recall_at": {"1": 0, "3": 0, "5": 0, "10": 0},
+        "question_type": "domain-relevant",
+    }
+    summary = summarize(json.loads(json.dumps([row_a, row_b])))
+    assert summary["overall"]["hit_at"]["5"] == 0.5
+    assert summary["overall"]["recall_at"]["5"] == pytest.approx((2 / 3) / 2)
+    assert summary["by_type"]["metrics-generated"]["recall_at"]["5"] == pytest.approx(2 / 3)
 
 
 def test_global_topk_matches_brute_force():
